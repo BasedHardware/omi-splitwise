@@ -817,6 +817,73 @@ async def tool_update_expense(request: Request):
         return ChatToolResponse(error=f"Failed to update expense: {str(e)}")
 
 
+@app.post("/tools/get_expense_details", tags=["chat_tools"], response_model=ChatToolResponse)
+async def tool_get_expense_details(request: Request):
+    """
+    Get details of a Splitwise expense including participants.
+    """
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        expense_id = body.get("expense_id")
+        
+        if not uid:
+            return ChatToolResponse(error="User ID is required")
+        
+        if not expense_id:
+            return ChatToolResponse(error="Expense ID is required. Use 'list expenses' to find expense IDs.")
+        
+        client = get_splitwise_client(uid)
+        if not client:
+            return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        
+        try:
+            expense = client.getExpense(expense_id)
+        except Exception as e:
+            return ChatToolResponse(error=f"Could not find expense with ID {expense_id}")
+        
+        desc = expense.getDescription() or "Expense"
+        cost = expense.getCost()
+        currency = expense.getCurrencyCode() or "USD"
+        date = expense.getDate()
+        
+        # Parse date
+        try:
+            date_obj = datetime.fromisoformat(date.replace('Z', '+00:00'))
+            date_str = date_obj.strftime("%B %d, %Y")
+        except:
+            date_str = date
+        
+        result_parts = [
+            f"**{desc}**",
+            "",
+            f"**Amount:** {currency} {cost}",
+            f"**Date:** {date_str}",
+            ""
+        ]
+        
+        # Get participants
+        users = expense.getUsers()
+        if users:
+            result_parts.append("**Participants:**")
+            for user in users:
+                name = f"{user.getFirstName()} {user.getLastName() or ''}".strip()
+                paid = user.getPaidShare() or "0"
+                owed = user.getOwedShare() or "0"
+                result_parts.append(f"• {name}: paid {currency} {paid}, owes {currency} {owed}")
+        
+        # Get group info
+        group_id = expense.getGroupId()
+        if group_id and group_id != 0:
+            result_parts.append(f"\n**Group ID:** {group_id}")
+        
+        return ChatToolResponse(result="\n".join(result_parts))
+    
+    except Exception as e:
+        print(f"Error getting expense details: {e}")
+        return ChatToolResponse(error=f"Failed to get expense details: {str(e)}")
+
+
 @app.post("/tools/get_expense_comments", tags=["chat_tools"], response_model=ChatToolResponse)
 async def tool_get_expense_comments(request: Request):
     """
@@ -852,18 +919,38 @@ async def tool_get_expense_comments(request: Request):
         
         result_parts = [f"**Comments on: {desc}**", ""]
         for comment in comments:
-            user = comment.getUser()
-            user_name = f"{user.getFirstName()} {user.getLastName() or ''}".strip() if user else "Unknown"
-            content = comment.getContent()
-            created = comment.getCreatedAt()
+            # Comment object methods vary - try different approaches
+            content = comment.getContent() if hasattr(comment, 'getContent') else str(comment)
+            created = comment.getCreatedAt() if hasattr(comment, 'getCreatedAt') else ""
+            
+            # Try to get user info
+            user_name = "Someone"
+            try:
+                if hasattr(comment, 'getUser'):
+                    user = comment.getUser()
+                    if user:
+                        if hasattr(user, 'getFirstName'):
+                            user_name = f"{user.getFirstName()} {user.getLastName() or ''}".strip()
+                        elif hasattr(user, 'first_name'):
+                            user_name = f"{user.first_name} {user.last_name or ''}".strip()
+                        elif isinstance(user, dict):
+                            user_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            except:
+                pass
             
             try:
-                date_obj = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                date_str = date_obj.strftime("%b %d at %I:%M %p")
+                if created:
+                    date_obj = datetime.fromisoformat(str(created).replace('Z', '+00:00'))
+                    date_str = date_obj.strftime("%b %d at %I:%M %p")
+                else:
+                    date_str = ""
             except:
-                date_str = created
+                date_str = str(created) if created else ""
             
-            result_parts.append(f"**{user_name}** ({date_str}):\n{content}\n")
+            if date_str:
+                result_parts.append(f"**{user_name}** ({date_str}):\n{content}\n")
+            else:
+                result_parts.append(f"**{user_name}**:\n{content}\n")
         
         return ChatToolResponse(result="\n".join(result_parts))
     
@@ -1001,6 +1088,23 @@ async def get_omi_tools_manifest():
                 },
                 "auth_required": True,
                 "status_message": "Getting your expenses..."
+            },
+            {
+                "name": "get_expense_details",
+                "description": "Get details of a Splitwise expense including who is involved/participating, amounts paid and owed. Use this when the user wants to know who is in an expense, who paid, who owes what, or get full expense info.",
+                "endpoint": "/tools/get_expense_details",
+                "method": "POST",
+                "parameters": {
+                    "properties": {
+                        "expense_id": {
+                            "type": "string",
+                            "description": "The expense ID to get details for. Required. Use 'list expenses' to find IDs."
+                        }
+                    },
+                    "required": ["expense_id"]
+                },
+                "auth_required": True,
+                "status_message": "Getting expense details..."
             },
             {
                 "name": "update_expense",
