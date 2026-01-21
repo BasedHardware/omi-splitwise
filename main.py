@@ -258,15 +258,41 @@ def parse_date(date_str: Optional[str]) -> datetime:
     return datetime.utcnow()
 
 
-def parse_amount(amount_str: str) -> Decimal:
-    """Parse amount string to Decimal, handling currency symbols."""
+def detect_currency(amount_str: str) -> Optional[str]:
+    """Detect currency from amount string based on symbols or keywords."""
+    amount_lower = amount_str.lower().strip()
+    
+    # Check for currency symbols and keywords
+    if "$" in amount_str or "dollar" in amount_lower or "usd" in amount_lower:
+        return "USD"
+    elif "€" in amount_str or "euro" in amount_lower or "eur" in amount_lower:
+        return "EUR"
+    elif "£" in amount_str or "pound" in amount_lower or "gbp" in amount_lower:
+        return "GBP"
+    elif "¥" in amount_str or "yen" in amount_lower or "jpy" in amount_lower:
+        return "JPY"
+    elif "₹" in amount_str or "rupee" in amount_lower or "inr" in amount_lower:
+        return "INR"
+    elif "cad" in amount_lower:
+        return "CAD"
+    elif "aud" in amount_lower:
+        return "AUD"
+    
+    return None  # No currency detected
+
+
+def parse_amount(amount_str: str) -> Tuple[Decimal, Optional[str]]:
+    """Parse amount string to Decimal and detect currency. Returns (amount, currency_code)."""
+    # Detect currency first
+    detected_currency = detect_currency(amount_str)
+    
     # Remove common currency symbols and whitespace
     cleaned = amount_str.strip()
-    for symbol in ["$", "€", "£", "¥", "₹", "dollars", "dollar", "usd", "eur"]:
-        cleaned = cleaned.replace(symbol, "").strip()
+    for symbol in ["$", "€", "£", "¥", "₹", "dollars", "dollar", "usd", "eur", "gbp", "inr", "jpy", "cad", "aud", "rupees", "rupee", "pounds", "euros"]:
+        cleaned = cleaned.lower().replace(symbol, "").strip()
     
     try:
-        return Decimal(cleaned)
+        return Decimal(cleaned), detected_currency
     except:
         raise ValueError(f"Invalid amount: {amount_str}")
 
@@ -481,9 +507,9 @@ async def tool_create_expense(request: Request):
         if not current_user:
             return ChatToolResponse(error="Could not get your Splitwise user info. Please reconnect your account.")
         
-        # Parse amount
+        # Parse amount and detect currency
         try:
-            amount = parse_amount(amount_str)
+            amount, detected_currency = parse_amount(amount_str)
             if amount <= 0:
                 return ChatToolResponse(error="Amount must be greater than zero")
         except ValueError as e:
@@ -553,8 +579,11 @@ async def tool_create_expense(request: Request):
         expense.setDate(expense_date.strftime("%Y-%m-%dT%H:%M:%SZ"))
         expense.setGroupId(group_id)
         
+        # Set currency: explicit param > detected from amount > user default
         if currency_code:
             expense.setCurrencyCode(currency_code)
+        elif detected_currency:
+            expense.setCurrencyCode(detected_currency)
         elif current_user.default_currency:
             expense.setCurrencyCode(current_user.default_currency)
         
@@ -594,12 +623,16 @@ async def tool_create_expense(request: Request):
         friend_names_str = ", ".join([f"{f.first_name} {f.last_name or ''}".strip() for f in matched_friends])
         share_amount = shares[1] if len(shares) > 1 else shares[0]
         
+        # Determine which currency was used
+        used_currency = currency_code or detected_currency or current_user.default_currency or "USD"
+        currency_symbol = {"USD": "$", "EUR": "€", "GBP": "£", "INR": "₹", "JPY": "¥"}.get(used_currency, used_currency + " ")
+        
         result_parts = [
             f"**Expense Created!**",
             f"",
-            f"**{description}** - ${amount}",
+            f"**{description}** - {currency_symbol}{amount}",
             f"Split with: {friend_names_str}",
-            f"Each person owes: ${share_amount}",
+            f"Each person owes: {currency_symbol}{share_amount}",
         ]
         
         if group_info:
@@ -789,7 +822,7 @@ async def tool_update_expense(request: Request):
         
         if new_cost:
             try:
-                cost_decimal = parse_amount(new_cost)
+                cost_decimal, _ = parse_amount(new_cost)
                 expense.setCost(str(cost_decimal))
                 updates.append(f"Cost: ${cost_decimal}")
             except:
