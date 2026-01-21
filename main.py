@@ -142,16 +142,24 @@ def get_groups_list(uid: str) -> List[SplitwiseGroup]:
         return []
 
 
-def fuzzy_match_friend(name: str, friends: List[SplitwiseFriend], threshold: float = 0.6) -> Tuple[Optional[SplitwiseFriend], float, List[SplitwiseFriend]]:
+def fuzzy_match_friend(name: str, friends: List[SplitwiseFriend], threshold: float = 0.4) -> Tuple[Optional[SplitwiseFriend], float, List[SplitwiseFriend]]:
     """
     Fuzzy match a name against the friends list.
     Returns: (best_match, confidence, top_candidates)
+    Uses multiple strategies including phonetic similarity for voice-transcribed names.
     """
     if not friends:
         return None, 0.0, []
     
     name_lower = name.lower().strip()
     scored_friends = []
+    
+    # Remove common prefixes/noise from voice transcription
+    noise_words = ["with", "and", "to", "for", "the", "a", "an"]
+    name_clean = name_lower
+    for noise in noise_words:
+        name_clean = name_clean.replace(noise + " ", "").replace(" " + noise, "")
+    name_clean = name_clean.strip()
     
     for friend in friends:
         # Build variations of the friend's name to match against
@@ -160,28 +168,55 @@ def fuzzy_match_friend(name: str, friends: List[SplitwiseFriend], threshold: flo
         last_name = (friend.last_name or "").lower()
         email_prefix = (friend.email or "").split("@")[0].lower() if friend.email else ""
         
-        # Calculate similarity scores for different name variations
-        scores = [
-            difflib.SequenceMatcher(None, name_lower, full_name).ratio(),
-            difflib.SequenceMatcher(None, name_lower, first_name).ratio(),
-            difflib.SequenceMatcher(None, name_lower, last_name).ratio() if last_name else 0,
-            difflib.SequenceMatcher(None, name_lower, email_prefix).ratio() if email_prefix else 0,
-        ]
+        scores = []
         
-        # Also check if input is a substring or prefix
-        if name_lower in full_name or full_name.startswith(name_lower):
-            scores.append(0.85)
-        if name_lower == first_name or name_lower == last_name:
+        # Standard similarity scores
+        scores.append(difflib.SequenceMatcher(None, name_clean, full_name).ratio())
+        scores.append(difflib.SequenceMatcher(None, name_clean, first_name).ratio())
+        if last_name:
+            scores.append(difflib.SequenceMatcher(None, name_clean, last_name).ratio())
+        if email_prefix:
+            scores.append(difflib.SequenceMatcher(None, name_clean, email_prefix).ratio())
+        
+        # Exact or prefix match
+        if name_clean == first_name or name_clean == last_name:
             scores.append(1.0)
+        if name_clean in full_name or full_name.startswith(name_clean):
+            scores.append(0.85)
+        if first_name.startswith(name_clean) or name_clean.startswith(first_name[:2] if len(first_name) >= 2 else first_name):
+            scores.append(0.75)
         
-        best_score = max(scores)
+        # Phonetic/character overlap - good for voice transcription errors
+        # e.g., "arab" could be transcription of "aarav", "iron" could be "aayan"
+        name_chars = set(name_clean.replace(" ", ""))
+        first_chars = set(first_name.replace(" ", ""))
+        if name_chars and first_chars:
+            char_overlap = len(name_chars & first_chars) / max(len(name_chars), len(first_chars))
+            scores.append(char_overlap * 0.7)  # Weight character overlap
+        
+        # First letter bonus - important for voice transcription
+        if name_clean and first_name and name_clean[0] == first_name[0]:
+            scores.append(max(scores) + 0.1 if scores else 0.3)
+        
+        # Handle common voice transcription patterns (consonant sounds)
+        # Extract consonants for comparison (vowels often get transcribed wrong)
+        name_consonants = ''.join(c for c in name_clean if c not in 'aeiou')
+        first_consonants = ''.join(c for c in first_name if c not in 'aeiou')
+        if name_consonants and first_consonants:
+            consonant_score = difflib.SequenceMatcher(None, name_consonants, first_consonants).ratio()
+            scores.append(consonant_score * 0.8)
+        
+        best_score = max(scores) if scores else 0.0
         scored_friends.append((friend, best_score))
+        
+        # Debug logging for scoring
+        print(f"DEBUG: Score '{name_clean}' vs '{first_name}': {best_score:.3f} (scores: {[f'{s:.2f}' for s in sorted(scores, reverse=True)[:3]]})")
     
     # Sort by score descending
     scored_friends.sort(key=lambda x: x[1], reverse=True)
     
     best_match, best_score = scored_friends[0] if scored_friends else (None, 0.0)
-    top_candidates = [f for f, s in scored_friends[:3] if s >= threshold * 0.8]
+    top_candidates = [f for f, s in scored_friends[:3]]
     
     if best_score >= threshold:
         return best_match, best_score, top_candidates
@@ -533,9 +568,18 @@ async def tool_create_expense(request: Request):
         if not friends:
             return ChatToolResponse(error="Could not fetch your friends list. Please make sure you have friends on Splitwise.")
         
+        # Log available friends for debugging
+        print(f"DEBUG: Available friends ({len(friends)}):")
+        for f in friends:
+            print(f"  - {f.first_name} {f.last_name or ''} (ID: {f.id}, email: {f.email})")
+        
         matched_friends = []
         for name in friend_names:
             match, confidence, candidates = fuzzy_match_friend(name, friends)
+            print(f"DEBUG: Fuzzy match for '{name}':")
+            print(f"  - Best match: {match.first_name if match else 'None'} {match.last_name or '' if match else ''} (confidence: {confidence:.2f})")
+            print(f"  - Top candidates: {[f'{c.first_name} {c.last_name or ''}' for c in candidates]}")
+            
             if not match:
                 candidate_names = [f"{c.first_name} {c.last_name or ''}".strip() for c in candidates[:3]]
                 if candidate_names:
@@ -545,6 +589,10 @@ async def tool_create_expense(request: Request):
                 else:
                     return ChatToolResponse(error=f"Could not find friend '{name}' in your Splitwise friends list.")
             matched_friends.append(match)
+        
+        print(f"DEBUG: Final matched friends:")
+        for f in matched_friends:
+            print(f"  - {f.first_name} {f.last_name or ''} (ID: {f.id})")
         
         # Check for duplicate friends
         friend_ids = [f.id for f in matched_friends]
@@ -610,21 +658,38 @@ async def tool_create_expense(request: Request):
         
         expense.setUsers(users)
         
-        # Create expense
-        print(f"Creating expense: cost={amount}, desc={description}, group_id={group_id}, users={len(users)}")
+        # Determine which currency was used
+        used_currency = currency_code or detected_currency or current_user.default_currency or "USD"
+        
+        # Log full expense details before creating
+        print(f"DEBUG: Creating expense with details:")
+        print(f"  - Description: {description}")
+        print(f"  - Cost: {amount} {used_currency}")
+        print(f"  - Date: {expense_date.strftime('%Y-%m-%d')}")
+        print(f"  - Group ID: {group_id} ({'non-group' if group_id == 0 else group_info.name if group_info else 'unknown'})")
+        print(f"  - Payer: {current_user.first_name} {current_user.last_name or ''} (ID: {current_user.id})")
+        print(f"  - Participants ({len(users)}):")
+        for i, user in enumerate(users):
+            if i == 0:
+                print(f"    * {current_user.first_name} (ID: {current_user.id}): paid={amount}, owes={shares[0]}")
+            else:
+                f = matched_friends[i-1]
+                print(f"    * {f.first_name} {f.last_name or ''} (ID: {f.id}): paid=0, owes={shares[i]}")
+        
         created_expense, errors = client.createExpense(expense)
         
         if errors:
             error_msg = str(errors)
-            print(f"Splitwise error: {error_msg}")
+            print(f"ERROR: Splitwise API error: {error_msg}")
             return ChatToolResponse(error=f"Failed to create expense: {error_msg}")
+        
+        # Log success
+        expense_id = created_expense.getId() if created_expense else "unknown"
+        print(f"SUCCESS: Expense created with ID: {expense_id}")
         
         # Format success message
         friend_names_str = ", ".join([f"{f.first_name} {f.last_name or ''}".strip() for f in matched_friends])
         share_amount = shares[1] if len(shares) > 1 else shares[0]
-        
-        # Determine which currency was used
-        used_currency = currency_code or detected_currency or current_user.default_currency or "USD"
         currency_symbol = {"USD": "$", "EUR": "€", "GBP": "£", "INR": "₹", "JPY": "¥"}.get(used_currency, used_currency + " ")
         
         result_parts = [
