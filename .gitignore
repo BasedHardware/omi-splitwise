@@ -1,0 +1,29 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data files (local storage)
+data/tokens.json
+data/user_settings.json
+data/oauth_states.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
