@@ -616,6 +616,299 @@ async def tool_create_expense(request: Request):
         return ChatToolResponse(error=f"Failed to create expense: {str(e)}")
 
 
+@app.post("/tools/get_friends", tags=["chat_tools"], response_model=ChatToolResponse)
+async def tool_get_friends(request: Request):
+    """
+    Get the user's Splitwise friends list.
+    """
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        
+        if not uid:
+            return ChatToolResponse(error="User ID is required")
+        
+        client = get_splitwise_client(uid)
+        if not client:
+            return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        
+        friends = get_friends_list(uid)
+        if not friends:
+            return ChatToolResponse(result="You don't have any friends on Splitwise yet.")
+        
+        # Format friends list
+        result_parts = [f"**Your Splitwise Friends ({len(friends)})**", ""]
+        for i, friend in enumerate(friends, 1):
+            name = f"{friend.first_name} {friend.last_name or ''}".strip()
+            email_str = f" ({friend.email})" if friend.email else ""
+            result_parts.append(f"{i}. {name}{email_str}")
+        
+        return ChatToolResponse(result="\n".join(result_parts))
+    
+    except Exception as e:
+        print(f"Error getting friends: {e}")
+        return ChatToolResponse(error=f"Failed to get friends: {str(e)}")
+
+
+@app.post("/tools/list_expenses", tags=["chat_tools"], response_model=ChatToolResponse)
+async def tool_list_expenses(request: Request):
+    """
+    List recent Splitwise expenses.
+    """
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        limit = body.get("limit", 10)
+        group_name = body.get("group")
+        
+        if not uid:
+            return ChatToolResponse(error="User ID is required")
+        
+        client = get_splitwise_client(uid)
+        if not client:
+            return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        
+        # Get group_id if group name specified
+        group_id = None
+        if group_name:
+            groups = get_groups_list(uid)
+            group_match, _ = fuzzy_match_group(group_name, groups)
+            if group_match:
+                group_id = group_match.id
+        
+        # Fetch expenses
+        if group_id:
+            expenses = client.getExpenses(group_id=group_id, limit=limit)
+        else:
+            expenses = client.getExpenses(limit=limit)
+        
+        if not expenses:
+            return ChatToolResponse(result="No expenses found.")
+        
+        # Format expenses list
+        result_parts = [f"**Recent Expenses ({len(expenses)})**", ""]
+        for exp in expenses:
+            desc = exp.getDescription() or "No description"
+            cost = exp.getCost()
+            currency = exp.getCurrencyCode() or "USD"
+            date = exp.getDate()
+            exp_id = exp.getId()
+            
+            # Parse date
+            try:
+                date_obj = datetime.fromisoformat(date.replace('Z', '+00:00'))
+                date_str = date_obj.strftime("%b %d, %Y")
+            except:
+                date_str = date
+            
+            result_parts.append(f"• **{desc}** - {currency} {cost} ({date_str}) [ID: {exp_id}]")
+        
+        return ChatToolResponse(result="\n".join(result_parts))
+    
+    except Exception as e:
+        print(f"Error listing expenses: {e}")
+        return ChatToolResponse(error=f"Failed to list expenses: {str(e)}")
+
+
+@app.post("/tools/delete_expense", tags=["chat_tools"], response_model=ChatToolResponse)
+async def tool_delete_expense(request: Request):
+    """
+    Delete a Splitwise expense.
+    """
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        expense_id = body.get("expense_id")
+        
+        if not uid:
+            return ChatToolResponse(error="User ID is required")
+        
+        if not expense_id:
+            return ChatToolResponse(error="Expense ID is required. Use 'list expenses' to find expense IDs.")
+        
+        client = get_splitwise_client(uid)
+        if not client:
+            return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        
+        # Get expense details first for confirmation message
+        try:
+            expense = client.getExpense(expense_id)
+            desc = expense.getDescription() or "Expense"
+            cost = expense.getCost()
+        except:
+            desc = "Expense"
+            cost = "unknown"
+        
+        # Delete expense
+        success, errors = client.deleteExpense(expense_id)
+        
+        if errors:
+            return ChatToolResponse(error=f"Failed to delete expense: {errors}")
+        
+        return ChatToolResponse(result=f"**Expense Deleted**\n\nDeleted: {desc} (${cost})")
+    
+    except Exception as e:
+        print(f"Error deleting expense: {e}")
+        return ChatToolResponse(error=f"Failed to delete expense: {str(e)}")
+
+
+@app.post("/tools/update_expense", tags=["chat_tools"], response_model=ChatToolResponse)
+async def tool_update_expense(request: Request):
+    """
+    Update a Splitwise expense.
+    """
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        expense_id = body.get("expense_id")
+        new_description = body.get("description")
+        new_cost = body.get("cost")
+        new_date = body.get("date")
+        
+        if not uid:
+            return ChatToolResponse(error="User ID is required")
+        
+        if not expense_id:
+            return ChatToolResponse(error="Expense ID is required. Use 'list expenses' to find expense IDs.")
+        
+        client = get_splitwise_client(uid)
+        if not client:
+            return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        
+        # Get existing expense
+        try:
+            expense = client.getExpense(expense_id)
+        except Exception as e:
+            return ChatToolResponse(error=f"Could not find expense with ID {expense_id}")
+        
+        # Update fields
+        updates = []
+        if new_description:
+            expense.setDescription(new_description)
+            updates.append(f"Description: {new_description}")
+        
+        if new_cost:
+            try:
+                cost_decimal = parse_amount(new_cost)
+                expense.setCost(str(cost_decimal))
+                updates.append(f"Cost: ${cost_decimal}")
+            except:
+                return ChatToolResponse(error=f"Invalid cost: {new_cost}")
+        
+        if new_date:
+            parsed_date = parse_date(new_date)
+            expense.setDate(parsed_date.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            updates.append(f"Date: {parsed_date.strftime('%B %d, %Y')}")
+        
+        if not updates:
+            return ChatToolResponse(error="No updates specified. Provide description, cost, or date to update.")
+        
+        # Save updates
+        updated_expense, errors = client.updateExpense(expense)
+        
+        if errors:
+            return ChatToolResponse(error=f"Failed to update expense: {errors}")
+        
+        result_parts = ["**Expense Updated**", ""] + updates
+        return ChatToolResponse(result="\n".join(result_parts))
+    
+    except Exception as e:
+        print(f"Error updating expense: {e}")
+        return ChatToolResponse(error=f"Failed to update expense: {str(e)}")
+
+
+@app.post("/tools/get_expense_comments", tags=["chat_tools"], response_model=ChatToolResponse)
+async def tool_get_expense_comments(request: Request):
+    """
+    Get comments on a Splitwise expense.
+    """
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        expense_id = body.get("expense_id")
+        
+        if not uid:
+            return ChatToolResponse(error="User ID is required")
+        
+        if not expense_id:
+            return ChatToolResponse(error="Expense ID is required. Use 'list expenses' to find expense IDs.")
+        
+        client = get_splitwise_client(uid)
+        if not client:
+            return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        
+        # Get expense with comments
+        try:
+            expense = client.getExpense(expense_id)
+            desc = expense.getDescription() or "Expense"
+        except:
+            return ChatToolResponse(error=f"Could not find expense with ID {expense_id}")
+        
+        # Get comments
+        comments = client.getComments(expense_id)
+        
+        if not comments:
+            return ChatToolResponse(result=f"**{desc}**\n\nNo comments on this expense.")
+        
+        result_parts = [f"**Comments on: {desc}**", ""]
+        for comment in comments:
+            user = comment.getUser()
+            user_name = f"{user.getFirstName()} {user.getLastName() or ''}".strip() if user else "Unknown"
+            content = comment.getContent()
+            created = comment.getCreatedAt()
+            
+            try:
+                date_obj = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                date_str = date_obj.strftime("%b %d at %I:%M %p")
+            except:
+                date_str = created
+            
+            result_parts.append(f"**{user_name}** ({date_str}):\n{content}\n")
+        
+        return ChatToolResponse(result="\n".join(result_parts))
+    
+    except Exception as e:
+        print(f"Error getting comments: {e}")
+        return ChatToolResponse(error=f"Failed to get comments: {str(e)}")
+
+
+@app.post("/tools/add_expense_comment", tags=["chat_tools"], response_model=ChatToolResponse)
+async def tool_add_expense_comment(request: Request):
+    """
+    Add a comment to a Splitwise expense.
+    """
+    try:
+        body = await request.json()
+        uid = body.get("uid")
+        expense_id = body.get("expense_id")
+        comment_text = body.get("comment")
+        
+        if not uid:
+            return ChatToolResponse(error="User ID is required")
+        
+        if not expense_id:
+            return ChatToolResponse(error="Expense ID is required. Use 'list expenses' to find expense IDs.")
+        
+        if not comment_text:
+            return ChatToolResponse(error="Comment text is required.")
+        
+        client = get_splitwise_client(uid)
+        if not client:
+            return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        
+        # Add comment
+        comment, errors = client.createComment(expense_id, comment_text)
+        
+        if errors:
+            return ChatToolResponse(error=f"Failed to add comment: {errors}")
+        
+        return ChatToolResponse(result=f"**Comment Added**\n\n\"{comment_text}\"")
+    
+    except Exception as e:
+        print(f"Error adding comment: {e}")
+        return ChatToolResponse(error=f"Failed to add comment: {str(e)}")
+
+
 # ============================================
 # Omi Chat Tools Manifest
 # ============================================
@@ -675,6 +968,123 @@ async def get_omi_tools_manifest():
                 },
                 "auth_required": True,
                 "status_message": "Creating Splitwise expense..."
+            },
+            {
+                "name": "get_friends",
+                "description": "Get the user's Splitwise friends list. Use this when the user wants to see their friends, check who they can split expenses with, or find someone's name on Splitwise.",
+                "endpoint": "/tools/get_friends",
+                "method": "POST",
+                "parameters": {
+                    "properties": {},
+                    "required": []
+                },
+                "auth_required": True,
+                "status_message": "Getting your Splitwise friends..."
+            },
+            {
+                "name": "list_expenses",
+                "description": "List recent Splitwise expenses. Use this when the user wants to see their expenses, check recent splits, view expense history, or find an expense ID.",
+                "endpoint": "/tools/list_expenses",
+                "method": "POST",
+                "parameters": {
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of expenses to return (default: 10, max: 50)"
+                        },
+                        "group": {
+                            "type": "string",
+                            "description": "Filter by group name (fuzzy matched). If not provided, shows all expenses."
+                        }
+                    },
+                    "required": []
+                },
+                "auth_required": True,
+                "status_message": "Getting your expenses..."
+            },
+            {
+                "name": "update_expense",
+                "description": "Update an existing Splitwise expense. Use this when the user wants to change, edit, or modify an expense's description, amount, or date.",
+                "endpoint": "/tools/update_expense",
+                "method": "POST",
+                "parameters": {
+                    "properties": {
+                        "expense_id": {
+                            "type": "string",
+                            "description": "The expense ID to update. Required. Use 'list expenses' to find IDs."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "New description for the expense."
+                        },
+                        "cost": {
+                            "type": "string",
+                            "description": "New cost/amount for the expense (e.g., '25', '25.50')."
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "New date for the expense."
+                        }
+                    },
+                    "required": ["expense_id"]
+                },
+                "auth_required": True,
+                "status_message": "Updating expense..."
+            },
+            {
+                "name": "delete_expense",
+                "description": "Delete a Splitwise expense. Use this when the user wants to remove, delete, or cancel an expense.",
+                "endpoint": "/tools/delete_expense",
+                "method": "POST",
+                "parameters": {
+                    "properties": {
+                        "expense_id": {
+                            "type": "string",
+                            "description": "The expense ID to delete. Required. Use 'list expenses' to find IDs."
+                        }
+                    },
+                    "required": ["expense_id"]
+                },
+                "auth_required": True,
+                "status_message": "Deleting expense..."
+            },
+            {
+                "name": "get_expense_comments",
+                "description": "Get comments on a Splitwise expense. Use this when the user wants to see comments, notes, or discussions on an expense.",
+                "endpoint": "/tools/get_expense_comments",
+                "method": "POST",
+                "parameters": {
+                    "properties": {
+                        "expense_id": {
+                            "type": "string",
+                            "description": "The expense ID to get comments for. Required. Use 'list expenses' to find IDs."
+                        }
+                    },
+                    "required": ["expense_id"]
+                },
+                "auth_required": True,
+                "status_message": "Getting expense comments..."
+            },
+            {
+                "name": "add_expense_comment",
+                "description": "Add a comment to a Splitwise expense. Use this when the user wants to comment on, note, or add a message to an expense.",
+                "endpoint": "/tools/add_expense_comment",
+                "method": "POST",
+                "parameters": {
+                    "properties": {
+                        "expense_id": {
+                            "type": "string",
+                            "description": "The expense ID to comment on. Required. Use 'list expenses' to find IDs."
+                        },
+                        "comment": {
+                            "type": "string",
+                            "description": "The comment text to add. Required."
+                        }
+                    },
+                    "required": ["expense_id", "comment"]
+                },
+                "auth_required": True,
+                "status_message": "Adding comment..."
             }
         ]
     }
