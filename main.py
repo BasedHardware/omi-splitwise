@@ -398,8 +398,14 @@ async def splitwise_callback(request: Request, code: Optional[str] = None, state
     
     # Exchange code for access token
     try:
+        print(f"DEBUG: Exchanging code for token")
+        print(f"DEBUG: SPLITWISE_REDIRECT_URI = {SPLITWISE_REDIRECT_URI}")
+        print(f"DEBUG: code = {code[:10]}...")
+        
         s = Splitwise(SPLITWISE_CONSUMER_KEY, SPLITWISE_CONSUMER_SECRET)
         token_response = s.getOAuth2AccessToken(code, SPLITWISE_REDIRECT_URI)
+        
+        print(f"DEBUG: Token response received")
         
         # Store token (full dict including token_type)
         store_splitwise_tokens(
@@ -413,6 +419,7 @@ async def splitwise_callback(request: Request, code: Optional[str] = None, state
     
     except Exception as e:
         print(f"OAuth error: {e}")
+        print(f"DEBUG: SPLITWISE_REDIRECT_URI was: {SPLITWISE_REDIRECT_URI}")
         return templates.TemplateResponse("setup.html", {
             "request": request,
             "authenticated": False,
