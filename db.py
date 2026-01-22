@@ -25,7 +25,7 @@ def _get_redis() -> Optional['redis.Redis']:
     if not REDIS_AVAILABLE:
         return None
     
-    redis_url = os.getenv("REDIS_URL") or os.getenv("REDIS_PRIVATE_URL")
+    redis_url = os.getenv("REDIS_URL") or os.getenv("REDIS_PRIVATE_URL") or os.getenv("REDIS_PUBLIC_URL")
     if not redis_url:
         return None
     
