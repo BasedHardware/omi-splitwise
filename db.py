@@ -75,6 +75,7 @@ def _save_json(filepath: str, data: Dict[str, Any]):
 
 def store_splitwise_tokens(uid: str, access_token: str, token_type: str = "Bearer"):
     """Store Splitwise OAuth2 access token for a user."""
+    import sys
     r = _get_redis()
     
     token_data = {
@@ -86,29 +87,49 @@ def store_splitwise_tokens(uid: str, access_token: str, token_type: str = "Beare
     if r:
         # Use Redis
         key = f"splitwise:tokens:{uid}"
+        print(f"DB: Storing tokens in Redis for key={key}")
+        sys.stdout.flush()
         r.set(key, json.dumps(token_data))
         # Splitwise OAuth2 tokens don't expire, but we set a long TTL
         r.expire(key, 60 * 60 * 24 * 365)  # 1 year
+        print(f"DB: Tokens stored successfully in Redis")
+        sys.stdout.flush()
     else:
         # Fallback to file
+        print(f"DB: Storing tokens in file for uid={uid}")
+        sys.stdout.flush()
         tokens = _load_json(TOKENS_FILE)
         tokens[uid] = token_data
         _save_json(TOKENS_FILE, tokens)
+        print(f"DB: Tokens stored successfully in file")
+        sys.stdout.flush()
 
 
 def get_splitwise_tokens(uid: str) -> Optional[Dict[str, Any]]:
     """Get Splitwise tokens for a user."""
+    import sys
     r = _get_redis()
     
     if r:
         key = f"splitwise:tokens:{uid}"
+        print(f"DB: Getting tokens from Redis for key={key}")
+        sys.stdout.flush()
         data = r.get(key)
         if data:
+            print(f"DB: Found tokens in Redis")
+            sys.stdout.flush()
             return json.loads(data)
+        print(f"DB: No tokens found in Redis for {uid}")
+        sys.stdout.flush()
         return None
     else:
+        print(f"DB: Using file storage (no Redis)")
+        sys.stdout.flush()
         tokens = _load_json(TOKENS_FILE)
-        return tokens.get(uid)
+        result = tokens.get(uid)
+        print(f"DB: File tokens for {uid}: {'found' if result else 'not found'}")
+        sys.stdout.flush()
+        return result
 
 
 def delete_splitwise_tokens(uid: str):
