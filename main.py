@@ -539,7 +539,8 @@ async def tool_create_expense(request: Request):
     """
     try:
         body = await request.json()
-        print(f"CREATE_EXPENSE - Received request: {body}")
+        log(f"=== CREATE_EXPENSE START ===")
+        log(f"Request: {body}")
         
         uid = body.get("uid")
         amount_str = body.get("amount", "")
@@ -551,32 +552,45 @@ async def tool_create_expense(request: Request):
         currency_code = body.get("currency_code")
         details = body.get("details")
         
+        log(f"Parsed: uid={uid}, amount={amount_str}, person={person}, people={people}")
+        
         if not uid:
+            log("ERROR: Missing uid")
             return ChatToolResponse(error="User ID is required")
         
         if not amount_str:
+            log("ERROR: Missing amount")
             return ChatToolResponse(error="Amount is required")
         
         # Check authentication
+        log("Getting Splitwise client...")
         client = get_splitwise_client(uid)
         if not client:
+            log("ERROR: No client - not authenticated")
             return ChatToolResponse(error="Please connect your Splitwise account first in the app settings.")
+        log("Client OK")
         
         # Get current user
+        log("Getting current user...")
         current_user = get_current_user(uid)
         if not current_user:
+            log("ERROR: Could not get current user")
             return ChatToolResponse(error="Could not get your Splitwise user info. Please reconnect your account.")
+        log(f"Current user: {current_user.first_name} (ID: {current_user.id})")
         
         # Parse amount and detect currency
         try:
             amount, detected_currency = parse_amount(amount_str)
+            log(f"Amount: {amount}, detected currency: {detected_currency}")
             if amount <= 0:
                 return ChatToolResponse(error="Amount must be greater than zero")
         except ValueError as e:
+            log(f"ERROR: Invalid amount - {e}")
             return ChatToolResponse(error=str(e))
         
         # Parse date
         expense_date = parse_date(date_str)
+        log(f"Date: {expense_date}")
         
         # Normalize people list
         friend_names = []
@@ -585,13 +599,19 @@ async def tool_create_expense(request: Request):
         if people:
             friend_names.extend(people)
         
+        log(f"Friend names to match: {friend_names}")
+        
         if not friend_names:
+            log("ERROR: No friends specified")
             return ChatToolResponse(error="Please specify at least one person to split with (e.g., 'with John' or 'with Alice and Bob')")
         
         # Get friends list and match names
+        log("Fetching friends list...")
         friends = get_friends_list(uid)
         if not friends:
+            log("ERROR: No friends returned")
             return ChatToolResponse(error="Could not fetch your friends list. Please make sure you have friends on Splitwise.")
+        log(f"Got {len(friends)} friends")
         
         # Log available friends for debugging
         log(f"FRIENDS: {len(friends)} available: {[f'{f.first_name}' for f in friends]}")
